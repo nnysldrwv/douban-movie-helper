@@ -2,7 +2,7 @@
 // @name         豆瓣电影/读书附加功能 (IMDb评分 + 标记看过/已读及评分)
 // @name:en      Douban Movie & Book Helper (IMDb/RT Ratings + Watched/Read Marker)
 // @namespace    https://github.com/nnysldrwv/douban-movie-helper
-// @version      4.8
+// @version      4.9
 // @description  在豆瓣电影详情页显示IMDb/烂番茄评分，列表页自动标记已看/已读状态及星级打分。智能缓存+请求队列防风控。
 // @description:en  Show IMDb & Rotten Tomatoes ratings on Douban movie pages. Auto-mark watched/read items with star ratings in list views. Smart caching & request queue to avoid rate limiting.
 // @author       nnysldrwv
@@ -424,11 +424,11 @@
     // 功能 2：在各种列表页 (Top250, 分类排行榜等) 标记“看过/已读”及“打分”
     // ==========================================
     function handleListPages() {
-        const CACHE_KEY = 'douban_watched_cache_v4'; // 升级缓存，拆分书籍和电影
+        const CACHE_KEY = 'douban_watched_cache_v5'; // v5: 支持 wish/watched 状态区分
         const NOW = Date.now();
-        // 缓存策略：看过的缓存30天，没看过的缓存3天
-        const EXPIRE_WATCHED = 30 * 24 * 60 * 60 * 1000;
-        const EXPIRE_UNWATCHED = 3 * 24 * 60 * 60 * 1000;
+        // 缓存策略：已看/想看缓存30天，未标记的缓存3天
+        const EXPIRE_MARKED = 30 * 24 * 60 * 60 * 1000;
+        const EXPIRE_UNMARKED = 3 * 24 * 60 * 60 * 1000;
 
         let cache = GM_getValue(CACHE_KEY, {});
 
@@ -436,35 +436,42 @@
             const entry = cache[typeId];
             if (!entry) return null;
             const age = NOW - entry.time;
-            if (entry.watched && age < EXPIRE_WATCHED) return entry;
-            if (!entry.watched && age < EXPIRE_UNWATCHED) return entry;
+            if (entry.status && age < EXPIRE_MARKED) return entry;  // watched 或 wish
+            if (!entry.status && age < EXPIRE_UNMARKED) return entry; // 未标记
             return null; // 缓存过期
         }
 
-        function setCache(typeId, isWatched, rating) {
-            cache[typeId] = { watched: isWatched, rating: rating, time: NOW };
+        function setCache(typeId, status, rating) {
+            // status: 'watched' | 'wish' | false
+            cache[typeId] = { watched: !!status, status: status || false, rating: rating, time: NOW };
             GM_setValue(CACHE_KEY, cache);
         }
 
-        function markAsWatched(element, rating, domainType) {
-            // 我们要在 element 内部寻找合适的地方插入 badge，或者直接插在 element 后面
-            if (element.querySelector('.watched-badge')) return; // 已标记过
+        function markStatus(element, status, rating, domainType) {
+            // status: 'watched' | 'wish'
+            if (element.querySelector('.watched-badge')) return;
             if (element.parentElement && element.parentElement.querySelector('.watched-badge')) return;
             
             const badge = document.createElement('span');
             badge.className = 'watched-badge';
             
-            let badgeText = domainType === 'book' ? '✅ 已读' : '✅ 已看';
-            if (rating && rating > 0) {
-                const fullStars = '★'.repeat(rating);
-                const emptyStars = '☆'.repeat(5 - rating);
-                badgeText += ` ${fullStars}${emptyStars}`;
+            let badgeText, bgColor;
+            if (status === 'wish') {
+                badgeText = domainType === 'book' ? '📖 想读' : '🎬 想看';
+                bgColor = '#f09199'; // 粉色，区别于已看的绿色
+            } else {
+                badgeText = domainType === 'book' ? '✅ 已读' : '✅ 已看';
+                bgColor = '#5ab346';
+                if (rating && rating > 0) {
+                    const fullStars = '★'.repeat(rating);
+                    const emptyStars = '☆'.repeat(5 - rating);
+                    badgeText += ` ${fullStars}${emptyStars}`;
+                }
             }
 
             badge.innerText = badgeText;
-            badge.style.cssText = 'color: #fff; background-color: #5ab346; padding: 2px 8px; border-radius: 4px; margin-left: 10px; font-size: 12px; vertical-align: middle; letter-spacing: 1px; display: inline-block;';
+            badge.style.cssText = `color: #fff; background-color: ${bgColor}; padding: 2px 8px; border-radius: 4px; margin-left: 10px; font-size: 12px; vertical-align: middle; letter-spacing: 1px; display: inline-block;`;
             
-            // 如果 element 是 A 标签，放在它同级的后面；如果是其他容器，放在里面
             if (element.tagName === 'A') {
                 element.parentNode.insertBefore(badge, element.nextSibling);
             } else {
@@ -539,17 +546,25 @@
                         }
                     }
 
+                    // 区分三种状态：已看/已读、想看/想读、未标记
                     const isWatched = userRating !== null || 
                         html.includes('<span class="a_saved">看过</span>') || 
                         html.includes('<span class="a_saved">读过</span>') || 
-                        html.includes('>修改</a>') || 
                         html.includes('我看过这部电影') ||
                         html.includes('我读过这本书');
+                    
+                    const isWish = !isWatched && (
+                        html.includes('<span class="a_saved">想看</span>') || 
+                        html.includes('<span class="a_saved">想读</span>') ||
+                        html.includes('我想看这部电影') ||
+                        html.includes('我想读这本书')
+                    );
 
-                    setCache(item.typeId, isWatched, userRating);
+                    const status = isWatched ? 'watched' : (isWish ? 'wish' : false);
+                    setCache(item.typeId, status, userRating);
 
-                    if (isWatched) {
-                        markAsWatched(item.element, userRating, item.domainType);
+                    if (status) {
+                        markStatus(item.element, status, userRating, item.domainType);
                     }
 
                     // 延迟 800 毫秒后再请求下一个
@@ -612,8 +627,9 @@
 
                 const cachedEntry = getCache(typeId);
                 if (cachedEntry) {
-                    if (cachedEntry.watched) {
-                        markAsWatched(elementToMark, cachedEntry.rating, domainType);
+                    const st = cachedEntry.status || (cachedEntry.watched ? 'watched' : false);
+                    if (st) {
+                        markStatus(elementToMark, st, cachedEntry.rating, domainType);
                     }
                 } else {
                     // 加入队列
