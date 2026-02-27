@@ -2,7 +2,7 @@
 // @name         豆瓣电影/读书附加功能 (IMDb评分 + 标记看过/已读及评分)
 // @name:en      Douban Movie & Book Helper (IMDb/RT Ratings + Watched/Read Marker)
 // @namespace    https://github.com/nnysldrwv/douban-movie-helper
-// @version      4.0
+// @version      4.1
 // @description  在豆瓣电影详情页显示IMDb/烂番茄评分，列表页自动标记已看/已读状态及星级打分。智能缓存+请求队列防风控。
 // @description:en  Show IMDb & Rotten Tomatoes ratings on Douban movie pages. Auto-mark watched/read items with star ratings in list views. Smart caching & request queue to avoid rate limiting.
 // @author       nnysldrwv
@@ -102,24 +102,117 @@
 
     function displayRatings(imdbRating, rtRating, imdbId) {
         const ratingWrap = document.querySelector('.rating_wrap');
-        if (ratingWrap) {
-            const ratingsDiv = document.createElement('div');
-            ratingsDiv.style.cssText = 'margin-top: 15px; padding-top: 15px; border-top: 1px solid #eee; display: flex; flex-direction: column; gap: 10px;';
-            
-            ratingsDiv.innerHTML = `
-                <div style="display: flex; align-items: center;">
-                    <span style="font-size: 15px; color: #9b9b9b; width: 85px;">IMDb 评分</span>
-                    <strong style="font-size: 24px; color: #e09015; margin-left: 10px;">${imdbRating}</strong>
-                    <a href="https://www.imdb.com/title/${imdbId}/" target="_blank" style="margin-left: 10px; font-size: 13px; color: #37a; text-decoration: none;">查看IMDb</a>
-                </div>
-                <div style="display: flex; align-items: center;">
-                    <span style="font-size: 15px; color: #9b9b9b; width: 85px;">烂番茄评分</span>
-                    <strong style="font-size: 24px; color: #fa320a; margin-left: 10px;">${rtRating}</strong>
-                    <a href="https://www.rottentomatoes.com/search?search=${imdbId}" target="_blank" style="margin-left: 10px; font-size: 13px; color: #37a; text-decoration: none;">查看烂番茄</a>
-                </div>
+        if (!ratingWrap) return;
+
+        // 注入样式（只注入一次）
+        if (!document.getElementById('dbhelper-style')) {
+            const style = document.createElement('style');
+            style.id = 'dbhelper-style';
+            style.textContent = `
+                .dbhelper-ratings {
+                    margin-top: 15px;
+                    padding-top: 14px;
+                    border-top: 1px solid #eaeaea;
+                }
+                .dbhelper-row {
+                    display: flex;
+                    align-items: center;
+                    padding: 6px 0;
+                }
+                .dbhelper-row + .dbhelper-row {
+                    margin-top: 2px;
+                }
+                .dbhelper-badge {
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: 44px;
+                    height: 20px;
+                    border-radius: 3px;
+                    font-size: 11px;
+                    font-weight: 700;
+                    letter-spacing: 0.5px;
+                    flex-shrink: 0;
+                    line-height: 1;
+                }
+                .dbhelper-badge-imdb {
+                    background: #f5c518;
+                    color: #000;
+                    font-family: 'Arial Black', Arial, sans-serif;
+                }
+                .dbhelper-badge-rt {
+                    background: #FA320A;
+                    color: #fff;
+                    font-family: Arial, sans-serif;
+                    font-size: 10px;
+                    width: 44px;
+                }
+                .dbhelper-score {
+                    font-size: 22px;
+                    font-weight: bold;
+                    margin-left: 12px;
+                    min-width: 45px;
+                    text-align: left;
+                    line-height: 1;
+                    letter-spacing: -0.5px;
+                    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                }
+                .dbhelper-score-imdb {
+                    color: #111;
+                }
+                .dbhelper-score-rt {
+                    color: #111;
+                }
+                .dbhelper-score-na {
+                    color: #bbb;
+                    font-size: 13px;
+                    font-weight: normal;
+                }
+                .dbhelper-sub {
+                    font-size: 12px;
+                    color: #9b9b9b;
+                    margin-left: 2px;
+                    line-height: 1;
+                    align-self: flex-end;
+                    margin-bottom: 1px;
+                }
+                .dbhelper-link {
+                    margin-left: auto;
+                    font-size: 12px;
+                    color: #9b9b9b;
+                    text-decoration: none;
+                    transition: color 0.15s;
+                    flex-shrink: 0;
+                }
+                .dbhelper-link:hover {
+                    color: #37a;
+                    text-decoration: underline;
+                }
             `;
-            ratingWrap.appendChild(ratingsDiv);
+            document.head.appendChild(style);
         }
+
+        const isImdbNum = imdbRating !== '暂无' && imdbRating !== '未找到' && imdbRating !== '解析失败' && imdbRating !== '网络错误';
+        const isRtNum = rtRating !== '暂无' && rtRating !== '未找到' && rtRating !== '解析失败' && rtRating !== '网络错误';
+
+        const ratingsDiv = document.createElement('div');
+        ratingsDiv.className = 'dbhelper-ratings';
+
+        ratingsDiv.innerHTML = `
+            <div class="dbhelper-row">
+                <span class="dbhelper-badge dbhelper-badge-imdb">IMDb</span>
+                <span class="dbhelper-score ${isImdbNum ? 'dbhelper-score-imdb' : 'dbhelper-score-na'}">${imdbRating}</span>
+                ${isImdbNum ? '<span class="dbhelper-sub">/ 10</span>' : ''}
+                <a class="dbhelper-link" href="https://www.imdb.com/title/${imdbId}/" target="_blank" rel="noopener">↗ IMDb</a>
+            </div>
+            <div class="dbhelper-row">
+                <span class="dbhelper-badge dbhelper-badge-rt">🍅 RT</span>
+                <span class="dbhelper-score ${isRtNum ? 'dbhelper-score-rt' : 'dbhelper-score-na'}">${rtRating}</span>
+                ${isRtNum ? '' : ''}
+                <a class="dbhelper-link" href="https://www.rottentomatoes.com/search?search=${imdbId}" target="_blank" rel="noopener">↗ Rotten Tomatoes</a>
+            </div>
+        `;
+        ratingWrap.appendChild(ratingsDiv);
     }
 
 
