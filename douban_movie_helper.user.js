@@ -2,7 +2,7 @@
 // @name         豆瓣电影/读书附加功能 (IMDb评分 + 标记看过/已读及评分)
 // @name:en      Douban Movie & Book Helper (IMDb/RT Ratings + Watched/Read Marker)
 // @namespace    https://github.com/nnysldrwv/douban-movie-helper
-// @version      4.1
+// @version      4.3
 // @description  在豆瓣电影详情页显示IMDb/烂番茄评分，列表页自动标记已看/已读状态及星级打分。智能缓存+请求队列防风控。
 // @description:en  Show IMDb & Rotten Tomatoes ratings on Douban movie pages. Auto-mark watched/read items with star ratings in list views. Smart caching & request queue to avoid rate limiting.
 // @author       nnysldrwv
@@ -28,6 +28,8 @@
 // @connect      movie.douban.com
 // @connect      book.douban.com
 // @connect      omdbapi.com
+// @connect      www.omdbapi.com
+// @connect      www.imdb.com
 // @icon         https://img3.doubanio.com/favicon.ico
 // ==/UserScript==
 
@@ -45,8 +47,8 @@
     }
 
     // 列表页和豆列页执行“已看/已读”扫描
-    if (isMovieListPage || isBookListPage || isDoulistPage || isSubjectPage) {
-        handleListPages(); // 即便在详情页，页面底部或右侧的推荐列表也可以被扫描
+    if (isMovieListPage || isBookListPage || isDoulistPage) {
+        handleListPages();
     }
 
     // ==========================================
@@ -65,37 +67,69 @@
     }
 
     function fetchMovieRatings(imdbId) {
-        // 使用一个公用的 OMDb API Key，可以同时获取 IMDb 和烂番茄评分
+        // 先尝试 OMDb API，失败后回退到直接抓取 IMDb 页面
         GM_xmlhttpRequest({
             method: "GET",
             url: `https://www.omdbapi.com/?i=${imdbId}&apikey=thewdb`,
+            timeout: 8000,
             onload: function(response) {
                 if (response.status === 200) {
                     try {
                         const data = JSON.parse(response.responseText);
                         if (data.Response === "True") {
                             let imdbRating = data.imdbRating && data.imdbRating !== 'N/A' ? data.imdbRating : '暂无';
-                            
                             let rtRating = '暂无';
                             if (data.Ratings && data.Ratings.length > 0) {
                                 const rt = data.Ratings.find(r => r.Source === 'Rotten Tomatoes');
-                                if (rt) {
-                                    rtRating = rt.Value;
-                                }
+                                if (rt) rtRating = rt.Value;
                             }
                             displayRatings(imdbRating, rtRating, imdbId);
-                        } else {
-                            displayRatings('未找到', '未找到', imdbId);
+                            return;
                         }
-                    } catch (e) {
-                        displayRatings('解析失败', '解析失败', imdbId);
+                    } catch (e) { /* fall through to IMDb fallback */ }
+                }
+                // OMDb 失败，回退到直接抓取 IMDb
+                fetchIMDbDirect(imdbId);
+            },
+            onerror: function() {
+                fetchIMDbDirect(imdbId);
+            },
+            ontimeout: function() {
+                fetchIMDbDirect(imdbId);
+            }
+        });
+    }
+
+    // 备用方案：直接从 IMDb 页面抓取评分
+    function fetchIMDbDirect(imdbId) {
+        GM_xmlhttpRequest({
+            method: "GET",
+            url: `https://www.imdb.com/title/${imdbId}/`,
+            headers: { "Accept-Language": "en-US,en;q=0.9" },
+            timeout: 10000,
+            onload: function(response) {
+                if (response.status === 200) {
+                    const html = response.responseText;
+                    let imdbRating = '暂无';
+                    // 从 JSON-LD 结构化数据中提取评分
+                    const jsonLdMatch = html.match(/"ratingValue"\s*:\s*"?([\d.]+)"?/);
+                    if (jsonLdMatch) {
+                        imdbRating = jsonLdMatch[1];
+                    } else {
+                        // 备用正则
+                        const altMatch = html.match(/hero-rating-bar__aggregate-rating__score[^>]*>[\s\S]*?([\d.]+)<\/span/);
+                        if (altMatch) imdbRating = altMatch[1];
                     }
+                    displayRatings(imdbRating, '暂无', imdbId);
                 } else {
-                    displayRatings('网络错误', '网络错误', imdbId);
+                    displayRatings('暂无', '暂无', imdbId);
                 }
             },
             onerror: function() {
-                displayRatings('网络错误', '网络错误', imdbId);
+                displayRatings('暂无', '暂无', imdbId);
+            },
+            ontimeout: function() {
+                displayRatings('暂无', '暂无', imdbId);
             }
         });
     }
