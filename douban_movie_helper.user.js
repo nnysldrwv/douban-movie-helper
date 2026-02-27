@@ -2,7 +2,7 @@
 // @name         豆瓣电影/读书附加功能 (IMDb评分 + 标记看过/已读及评分)
 // @name:en      Douban Movie & Book Helper (IMDb/RT Ratings + Watched/Read Marker)
 // @namespace    https://github.com/nnysldrwv/douban-movie-helper
-// @version      4.3
+// @version      4.4
 // @description  在豆瓣电影详情页显示IMDb/烂番茄评分，列表页自动标记已看/已读状态及星级打分。智能缓存+请求队列防风控。
 // @description:en  Show IMDb & Rotten Tomatoes ratings on Douban movie pages. Auto-mark watched/read items with star ratings in list views. Smart caching & request queue to avoid rate limiting.
 // @author       nnysldrwv
@@ -30,6 +30,7 @@
 // @connect      omdbapi.com
 // @connect      www.omdbapi.com
 // @connect      www.imdb.com
+// @connect      www.rottentomatoes.com
 // @icon         https://img3.doubanio.com/favicon.ico
 // ==/UserScript==
 
@@ -100,7 +101,7 @@
         });
     }
 
-    // 备用方案：直接从 IMDb 页面抓取评分
+    // 备用方案：直接从 IMDb 页面抓取评分（精确解析 JSON-LD aggregateRating）
     function fetchIMDbDirect(imdbId) {
         GM_xmlhttpRequest({
             method: "GET",
@@ -111,16 +112,27 @@
                 if (response.status === 200) {
                     const html = response.responseText;
                     let imdbRating = '暂无';
-                    // 从 JSON-LD 结构化数据中提取评分
-                    const jsonLdMatch = html.match(/"ratingValue"\s*:\s*"?([\d.]+)"?/);
-                    if (jsonLdMatch) {
-                        imdbRating = jsonLdMatch[1];
-                    } else {
-                        // 备用正则
-                        const altMatch = html.match(/hero-rating-bar__aggregate-rating__score[^>]*>[\s\S]*?([\d.]+)<\/span/);
-                        if (altMatch) imdbRating = altMatch[1];
+                    // 精确提取 JSON-LD 中 aggregateRating 块的 ratingValue
+                    const ldBlocks = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi);
+                    if (ldBlocks) {
+                        for (const block of ldBlocks) {
+                            try {
+                                const jsonStr = block.replace(/<script[^>]*>/, '').replace(/<\/script>/i, '');
+                                const ld = JSON.parse(jsonStr);
+                                if (ld.aggregateRating && ld.aggregateRating.ratingValue) {
+                                    imdbRating = String(ld.aggregateRating.ratingValue);
+                                    break;
+                                }
+                            } catch (e) { /* try next block */ }
+                        }
                     }
-                    displayRatings(imdbRating, '暂无', imdbId);
+                    // 如果 JSON-LD 解析失败，使用备用正则（限定 aggregateRating 上下文）
+                    if (imdbRating === '暂无') {
+                        const aggMatch = html.match(/"aggregateRating"\s*:\s*\{[^}]*"ratingValue"\s*:\s*"?([\d.]+)"?/);
+                        if (aggMatch) imdbRating = aggMatch[1];
+                    }
+                    // IMDb 拿到后，尝试抓 RT 评分
+                    fetchRTDirect(imdbId, imdbRating);
                 } else {
                     displayRatings('暂无', '暂无', imdbId);
                 }
@@ -134,9 +146,51 @@
         });
     }
 
+    // 从 Rotten Tomatoes 搜索页抓取评分
+    function fetchRTDirect(imdbId, imdbRating) {
+        // 从豆瓣页面获取电影英文名用于搜索
+        const titleEl = document.querySelector('h1 span[property="v:itemreviewed"]') || document.querySelector('h1');
+        const fullTitle = titleEl ? titleEl.textContent.trim() : '';
+        // 提取英文部分（通常在中文标题之后）
+        const engMatch = fullTitle.match(/[A-Za-z][A-Za-z\s:',\-\.!?&]+/);
+        const searchQuery = engMatch ? engMatch[0].trim() : imdbId;
+
+        GM_xmlhttpRequest({
+            method: "GET",
+            url: `https://www.rottentomatoes.com/search?search=${encodeURIComponent(searchQuery)}`,
+            headers: { "Accept-Language": "en-US,en;q=0.9" },
+            timeout: 8000,
+            onload: function(response) {
+                if (response.status === 200) {
+                    const html = response.responseText;
+                    // RT 搜索结果页中，第一个 tomatometer 分数
+                    const scoreMatch = html.match(/"tomatoScore"\s*:\s*"?(\d+)"?/) ||
+                                       html.match(/tomatometerscore="(\d+)"/) ||
+                                       html.match(/data-tomatometerscore="(\d+)"/);
+                    if (scoreMatch) {
+                        displayRatings(imdbRating, scoreMatch[1] + '%', imdbId);
+                    } else {
+                        displayRatings(imdbRating, '暂无', imdbId);
+                    }
+                } else {
+                    displayRatings(imdbRating, '暂无', imdbId);
+                }
+            },
+            onerror: function() {
+                displayRatings(imdbRating, '暂无', imdbId);
+            },
+            ontimeout: function() {
+                displayRatings(imdbRating, '暂无', imdbId);
+            }
+        });
+    }
+
     function displayRatings(imdbRating, rtRating, imdbId) {
         const ratingWrap = document.querySelector('.rating_wrap');
         if (!ratingWrap) return;
+
+        // 防止重复渲染
+        if (document.querySelector('.dbhelper-ratings')) return;
 
         // 注入样式（只注入一次）
         if (!document.getElementById('dbhelper-style')) {
@@ -144,58 +198,44 @@
             style.id = 'dbhelper-style';
             style.textContent = `
                 .dbhelper-ratings {
-                    margin-top: 15px;
-                    padding-top: 14px;
+                    margin-top: 12px;
+                    padding: 10px 0 2px;
                     border-top: 1px solid #eaeaea;
                 }
                 .dbhelper-row {
                     display: flex;
-                    align-items: center;
-                    padding: 6px 0;
-                }
-                .dbhelper-row + .dbhelper-row {
-                    margin-top: 2px;
+                    align-items: baseline;
+                    margin-bottom: 8px;
+                    line-height: 1;
                 }
                 .dbhelper-badge {
-                    display: inline-flex;
-                    align-items: center;
-                    justify-content: center;
-                    width: 44px;
-                    height: 20px;
+                    display: inline-block;
+                    padding: 2px 6px;
                     border-radius: 3px;
                     font-size: 11px;
                     font-weight: 700;
-                    letter-spacing: 0.5px;
+                    letter-spacing: 0.3px;
                     flex-shrink: 0;
-                    line-height: 1;
+                    text-align: center;
+                    min-width: 36px;
+                    box-sizing: border-box;
                 }
                 .dbhelper-badge-imdb {
                     background: #f5c518;
                     color: #000;
-                    font-family: 'Arial Black', Arial, sans-serif;
+                    font-family: Arial, sans-serif;
                 }
                 .dbhelper-badge-rt {
                     background: #FA320A;
                     color: #fff;
                     font-family: Arial, sans-serif;
-                    font-size: 10px;
-                    width: 44px;
                 }
                 .dbhelper-score {
-                    font-size: 22px;
+                    font-size: 17px;
                     font-weight: bold;
-                    margin-left: 12px;
-                    min-width: 45px;
-                    text-align: left;
-                    line-height: 1;
-                    letter-spacing: -0.5px;
+                    margin-left: 8px;
+                    color: #494949;
                     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-                }
-                .dbhelper-score-imdb {
-                    color: #111;
-                }
-                .dbhelper-score-rt {
-                    color: #111;
                 }
                 .dbhelper-score-na {
                     color: #bbb;
@@ -203,31 +243,33 @@
                     font-weight: normal;
                 }
                 .dbhelper-sub {
-                    font-size: 12px;
+                    font-size: 11px;
                     color: #9b9b9b;
-                    margin-left: 2px;
-                    line-height: 1;
-                    align-self: flex-end;
-                    margin-bottom: 1px;
+                    margin-left: 1px;
                 }
                 .dbhelper-link {
                     margin-left: auto;
                     font-size: 12px;
                     color: #9b9b9b;
                     text-decoration: none;
-                    transition: color 0.15s;
                     flex-shrink: 0;
+                    padding-left: 10px;
                 }
                 .dbhelper-link:hover {
                     color: #37a;
-                    text-decoration: underline;
                 }
             `;
             document.head.appendChild(style);
         }
 
-        const isImdbNum = imdbRating !== '暂无' && imdbRating !== '未找到' && imdbRating !== '解析失败' && imdbRating !== '网络错误';
-        const isRtNum = rtRating !== '暂无' && rtRating !== '未找到' && rtRating !== '解析失败' && rtRating !== '网络错误';
+        const isImdbNum = imdbRating && imdbRating !== '暂无' && /[\d.]/.test(imdbRating);
+        const isRtNum = rtRating && rtRating !== '暂无' && /\d/.test(rtRating);
+
+        // 从豆瓣页面获取电影英文名用于 RT 链接
+        const titleEl = document.querySelector('h1 span[property="v:itemreviewed"]') || document.querySelector('h1');
+        const fullTitle = titleEl ? titleEl.textContent.trim() : '';
+        const engMatch = fullTitle.match(/[A-Za-z][A-Za-z\s:',\-\.!?&]+/);
+        const rtQuery = engMatch ? encodeURIComponent(engMatch[0].trim()) : imdbId;
 
         const ratingsDiv = document.createElement('div');
         ratingsDiv.className = 'dbhelper-ratings';
@@ -235,15 +277,14 @@
         ratingsDiv.innerHTML = `
             <div class="dbhelper-row">
                 <span class="dbhelper-badge dbhelper-badge-imdb">IMDb</span>
-                <span class="dbhelper-score ${isImdbNum ? 'dbhelper-score-imdb' : 'dbhelper-score-na'}">${imdbRating}</span>
-                ${isImdbNum ? '<span class="dbhelper-sub">/ 10</span>' : ''}
-                <a class="dbhelper-link" href="https://www.imdb.com/title/${imdbId}/" target="_blank" rel="noopener">↗ IMDb</a>
+                <span class="dbhelper-score ${isImdbNum ? '' : 'dbhelper-score-na'}">${imdbRating}</span>
+                ${isImdbNum ? '<span class="dbhelper-sub"> / 10</span>' : ''}
+                <a class="dbhelper-link" href="https://www.imdb.com/title/${imdbId}/" target="_blank" rel="noopener">↗</a>
             </div>
             <div class="dbhelper-row">
-                <span class="dbhelper-badge dbhelper-badge-rt">🍅 RT</span>
-                <span class="dbhelper-score ${isRtNum ? 'dbhelper-score-rt' : 'dbhelper-score-na'}">${rtRating}</span>
-                ${isRtNum ? '' : ''}
-                <a class="dbhelper-link" href="https://www.rottentomatoes.com/search?search=${imdbId}" target="_blank" rel="noopener">↗ Rotten Tomatoes</a>
+                <span class="dbhelper-badge dbhelper-badge-rt">RT</span>
+                <span class="dbhelper-score ${isRtNum ? '' : 'dbhelper-score-na'}">${isRtNum ? '🍅 ' + rtRating : rtRating}</span>
+                <a class="dbhelper-link" href="https://www.rottentomatoes.com/search?search=${rtQuery}" target="_blank" rel="noopener">↗</a>
             </div>
         `;
         ratingWrap.appendChild(ratingsDiv);
