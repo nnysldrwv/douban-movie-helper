@@ -36,44 +36,10 @@
 - 现代浏览器（Chrome / Edge / Firefox 等）
 - [Tampermonkey](https://www.tampermonkey.net/) 浏览器扩展
 
-### 方式一：直接安装（推荐）
-
 1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 扩展
 2. 打开 Tampermonkey 管理面板 → 点击 **「添加新脚本」**
 3. 将 [`douban_movie_helper.user.js`](./douban_movie_helper.user.js) 的全部代码复制粘贴到编辑器中
 4. `Ctrl + S` 保存即可
-
-### 方式二：本地开发模式（可选）
-
-适合需要频繁修改脚本的开发者：
-
-1. 在浏览器扩展管理页面，找到 Tampermonkey → 开启 **「允许访问文件网址」**
-2. 在 Tampermonkey 中新建脚本，粘贴以下壳子代码（修改 `@require` 路径为你的本地路径）：
-
-```javascript
-// ==UserScript==
-// @name         豆瓣电影/读书附加功能 (本地同步版)
-// @namespace    http://tampermonkey.net/
-// @version      4.0
-// @match        *://movie.douban.com/subject/*
-// @match        *://movie.douban.com/top250*
-// @match        *://movie.douban.com/typerank*
-// @match        *://movie.douban.com/explore*
-// @match        *://book.douban.com/subject/*
-// @match        *://book.douban.com/top250*
-// @match        *://book.douban.com/tag/*
-// @match        *://book.douban.com/chart*
-// @match        *://www.douban.com/doulist/*
-// @grant        GM_xmlhttpRequest
-// @grant        GM_setValue
-// @grant        GM_getValue
-// @connect      imdb.com
-// @connect      movie.douban.com
-// @connect      book.douban.com
-// @connect      omdbapi.com
-// @require      file:///YOUR/LOCAL/PATH/douban_movie_helper.user.js
-// ==/UserScript==
-```
 
 ## 🌐 支持的页面
 
