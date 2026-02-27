@@ -2,7 +2,7 @@
 // @name         豆瓣电影/读书附加功能 (IMDb评分 + 标记看过/已读及评分)
 // @name:en      Douban Movie & Book Helper (IMDb/RT Ratings + Watched/Read Marker)
 // @namespace    https://github.com/nnysldrwv/douban-movie-helper
-// @version      4.4
+// @version      4.5
 // @description  在豆瓣电影详情页显示IMDb/烂番茄评分，列表页自动标记已看/已读状态及星级打分。智能缓存+请求队列防风控。
 // @description:en  Show IMDb & Rotten Tomatoes ratings on Douban movie pages. Auto-mark watched/read items with star ratings in list views. Smart caching & request queue to avoid rate limiting.
 // @author       nnysldrwv
@@ -69,6 +69,7 @@
 
     function fetchMovieRatings(imdbId) {
         // 先尝试 OMDb API，失败后回退到直接抓取 IMDb 页面
+        console.log('[DBHelper] Fetching OMDb for', imdbId);
         GM_xmlhttpRequest({
             method: "GET",
             url: `https://www.omdbapi.com/?i=${imdbId}&apikey=thewdb`,
@@ -77,6 +78,7 @@
                 if (response.status === 200) {
                     try {
                         const data = JSON.parse(response.responseText);
+                        console.log('[DBHelper] OMDb response:', data.Response, 'Ratings:', data.Ratings);
                         if (data.Response === "True") {
                             let imdbRating = data.imdbRating && data.imdbRating !== 'N/A' ? data.imdbRating : '暂无';
                             let rtRating = '暂无';
@@ -84,18 +86,29 @@
                                 const rt = data.Ratings.find(r => r.Source === 'Rotten Tomatoes');
                                 if (rt) rtRating = rt.Value;
                             }
-                            displayRatings(imdbRating, rtRating, imdbId);
+                            // 如果 OMDb 拿到了 IMDb 评分但没有 RT，单独补抓 RT
+                            if (rtRating === '暂无') {
+                                console.log('[DBHelper] OMDb missing RT, fetching from RT directly');
+                                fetchRTScore(imdbId, imdbRating);
+                            } else {
+                                displayRatings(imdbRating, rtRating, imdbId);
+                            }
                             return;
                         }
-                    } catch (e) { /* fall through to IMDb fallback */ }
+                    } catch (e) {
+                        console.warn('[DBHelper] OMDb parse error:', e);
+                    }
                 }
-                // OMDb 失败，回退到直接抓取 IMDb
+                // OMDb 完全失败，回退到直接抓取 IMDb + RT
+                console.log('[DBHelper] OMDb failed, falling back to IMDb direct');
                 fetchIMDbDirect(imdbId);
             },
             onerror: function() {
+                console.warn('[DBHelper] OMDb network error');
                 fetchIMDbDirect(imdbId);
             },
             ontimeout: function() {
+                console.warn('[DBHelper] OMDb timeout');
                 fetchIMDbDirect(imdbId);
             }
         });
@@ -103,6 +116,7 @@
 
     // 备用方案：直接从 IMDb 页面抓取评分（精确解析 JSON-LD aggregateRating）
     function fetchIMDbDirect(imdbId) {
+        console.log('[DBHelper] Fetching IMDb direct for', imdbId);
         GM_xmlhttpRequest({
             method: "GET",
             url: `https://www.imdb.com/title/${imdbId}/`,
@@ -131,8 +145,9 @@
                         const aggMatch = html.match(/"aggregateRating"\s*:\s*\{[^}]*"ratingValue"\s*:\s*"?([\d.]+)"?/);
                         if (aggMatch) imdbRating = aggMatch[1];
                     }
-                    // IMDb 拿到后，尝试抓 RT 评分
-                    fetchRTDirect(imdbId, imdbRating);
+                    console.log('[DBHelper] IMDb direct rating:', imdbRating);
+                    // IMDb 拿到后，抓 RT 评分
+                    fetchRTScore(imdbId, imdbRating);
                 } else {
                     displayRatings('暂无', '暂无', imdbId);
                 }
@@ -146,15 +161,24 @@
         });
     }
 
-    // 从 Rotten Tomatoes 搜索页抓取评分
-    function fetchRTDirect(imdbId, imdbRating) {
+    // ============ Rotten Tomatoes 两步法 ============
+    // Step 1: 搜索 RT 获取电影 slug
+    // Step 2: 访问 RT 电影详情页提取 Tomatometer
+    function fetchRTScore(imdbId, imdbRating) {
         // 从豆瓣页面获取电影英文名用于搜索
         const titleEl = document.querySelector('h1 span[property="v:itemreviewed"]') || document.querySelector('h1');
         const fullTitle = titleEl ? titleEl.textContent.trim() : '';
         // 提取英文部分（通常在中文标题之后）
         const engMatch = fullTitle.match(/[A-Za-z][A-Za-z\s:',\-\.!?&]+/);
-        const searchQuery = engMatch ? engMatch[0].trim() : imdbId;
+        const searchQuery = engMatch ? engMatch[0].trim() : '';
 
+        if (!searchQuery) {
+            console.log('[DBHelper] No English title found, skipping RT');
+            displayRatings(imdbRating, '暂无', imdbId);
+            return;
+        }
+
+        console.log('[DBHelper] RT search query:', searchQuery);
         GM_xmlhttpRequest({
             method: "GET",
             url: `https://www.rottentomatoes.com/search?search=${encodeURIComponent(searchQuery)}`,
@@ -163,13 +187,14 @@
             onload: function(response) {
                 if (response.status === 200) {
                     const html = response.responseText;
-                    // RT 搜索结果页中，第一个 tomatometer 分数
-                    const scoreMatch = html.match(/"tomatoScore"\s*:\s*"?(\d+)"?/) ||
-                                       html.match(/tomatometerscore="(\d+)"/) ||
-                                       html.match(/data-tomatometerscore="(\d+)"/);
-                    if (scoreMatch) {
-                        displayRatings(imdbRating, scoreMatch[1] + '%', imdbId);
+                    // 从搜索结果中提取第一个电影的 /m/slug URL
+                    const slugMatch = html.match(/rottentomatoes\.com\/m\/([^"\s]+)"/);
+                    if (slugMatch) {
+                        const slug = slugMatch[1];
+                        console.log('[DBHelper] RT slug found:', slug);
+                        fetchRTMoviePage(slug, imdbId, imdbRating);
                     } else {
+                        console.log('[DBHelper] No RT slug found in search results');
                         displayRatings(imdbRating, '暂无', imdbId);
                     }
                 } else {
@@ -185,7 +210,53 @@
         });
     }
 
-    function displayRatings(imdbRating, rtRating, imdbId) {
+    // Step 2: 从 RT 电影详情页提取 Tomatometer 评分
+    function fetchRTMoviePage(slug, imdbId, imdbRating) {
+        GM_xmlhttpRequest({
+            method: "GET",
+            url: `https://www.rottentomatoes.com/m/${slug}`,
+            headers: { "Accept-Language": "en-US,en;q=0.9" },
+            timeout: 8000,
+            onload: function(response) {
+                if (response.status === 200) {
+                    const html = response.responseText;
+                    let rtScore = null;
+
+                    // 方法1: 从 <media-scorecard> 组件内的 <rt-text> 提取第一个百分比
+                    const mcMatch = html.match(/<media-scorecard[\s\S]*?<\/media-scorecard>/);
+                    if (mcMatch) {
+                        const pcts = mcMatch[0].match(/<rt-text[^>]*>(\d+)%<\/rt-text>/);
+                        if (pcts) rtScore = pcts[1];
+                    }
+
+                    // 方法2: score-icon-critics 后跟百分比
+                    if (!rtScore) {
+                        const m2 = html.match(/score-icon-critics[^"]*"[^>]*>[\s\S]*?(\d+)%/);
+                        if (m2) rtScore = m2[1];
+                    }
+
+                    // 方法3: 直接查找 Tomatometer 附近的百分比
+                    if (!rtScore) {
+                        const m3 = html.match(/Tomatometer[\s\S]*?(\d+)%/);
+                        if (m3) rtScore = m3[1];
+                    }
+
+                    console.log('[DBHelper] RT score from page:', rtScore);
+                    displayRatings(imdbRating, rtScore ? rtScore + '%' : '暂无', imdbId, slug);
+                } else {
+                    displayRatings(imdbRating, '暂无', imdbId);
+                }
+            },
+            onerror: function() {
+                displayRatings(imdbRating, '暂无', imdbId);
+            },
+            ontimeout: function() {
+                displayRatings(imdbRating, '暂无', imdbId);
+            }
+        });
+    }
+
+    function displayRatings(imdbRating, rtRating, imdbId, rtSlug) {
         const ratingWrap = document.querySelector('.rating_wrap');
         if (!ratingWrap) return;
 
@@ -204,7 +275,7 @@
                 }
                 .dbhelper-row {
                     display: flex;
-                    align-items: baseline;
+                    align-items: center;
                     margin-bottom: 8px;
                     line-height: 1;
                 }
@@ -265,11 +336,17 @@
         const isImdbNum = imdbRating && imdbRating !== '暂无' && /[\d.]/.test(imdbRating);
         const isRtNum = rtRating && rtRating !== '暂无' && /\d/.test(rtRating);
 
-        // 从豆瓣页面获取电影英文名用于 RT 链接
-        const titleEl = document.querySelector('h1 span[property="v:itemreviewed"]') || document.querySelector('h1');
-        const fullTitle = titleEl ? titleEl.textContent.trim() : '';
-        const engMatch = fullTitle.match(/[A-Za-z][A-Za-z\s:',\-\.!?&]+/);
-        const rtQuery = engMatch ? encodeURIComponent(engMatch[0].trim()) : imdbId;
+        // RT 链接：有 slug 则直接链到电影页，否则用搜索
+        let rtLink;
+        if (rtSlug) {
+            rtLink = `https://www.rottentomatoes.com/m/${rtSlug}`;
+        } else {
+            const titleEl = document.querySelector('h1 span[property="v:itemreviewed"]') || document.querySelector('h1');
+            const fullTitle = titleEl ? titleEl.textContent.trim() : '';
+            const engMatch = fullTitle.match(/[A-Za-z][A-Za-z\s:',\-\.!?&]+/);
+            const rtQuery = engMatch ? encodeURIComponent(engMatch[0].trim()) : imdbId;
+            rtLink = `https://www.rottentomatoes.com/search?search=${rtQuery}`;
+        }
 
         const ratingsDiv = document.createElement('div');
         ratingsDiv.className = 'dbhelper-ratings';
@@ -284,7 +361,7 @@
             <div class="dbhelper-row">
                 <span class="dbhelper-badge dbhelper-badge-rt">RT</span>
                 <span class="dbhelper-score ${isRtNum ? '' : 'dbhelper-score-na'}">${isRtNum ? '🍅 ' + rtRating : rtRating}</span>
-                <a class="dbhelper-link" href="https://www.rottentomatoes.com/search?search=${rtQuery}" target="_blank" rel="noopener">↗</a>
+                <a class="dbhelper-link" href="${rtLink}" target="_blank" rel="noopener">↗</a>
             </div>
         `;
         ratingWrap.appendChild(ratingsDiv);
