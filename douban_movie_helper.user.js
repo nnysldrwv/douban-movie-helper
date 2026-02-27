@@ -1,9 +1,17 @@
 // ==UserScript==
 // @name         豆瓣电影/读书附加功能 (IMDb评分 + 标记看过/已读及评分)
-// @namespace    http://tampermonkey.net/
+// @name:en      Douban Movie & Book Helper (IMDb/RT Ratings + Watched/Read Marker)
+// @namespace    https://github.com/nnysldrwv/douban-movie-helper
 // @version      4.0
-// @description  在豆瓣电影详情页显示IMDb评分，并在各种列表页面显著标记已看过的电影/已读的书籍及自己的打分。带缓存机制防封禁。
-// @author       AI Assistant
+// @description  在豆瓣电影详情页显示IMDb/烂番茄评分，列表页自动标记已看/已读状态及星级打分。智能缓存+请求队列防风控。
+// @description:en  Show IMDb & Rotten Tomatoes ratings on Douban movie pages. Auto-mark watched/read items with star ratings in list views. Smart caching & request queue to avoid rate limiting.
+// @author       nnysldrwv
+// @license      MIT
+// @homepageURL  https://github.com/nnysldrwv/douban-movie-helper
+// @supportURL   https://github.com/nnysldrwv/douban-movie-helper/issues
+// @compatible   chrome
+// @compatible   firefox
+// @compatible   edge
 // @match        *://movie.douban.com/subject/*
 // @match        *://movie.douban.com/top250*
 // @match        *://movie.douban.com/typerank*
