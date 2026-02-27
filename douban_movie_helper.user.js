@@ -2,7 +2,7 @@
 // @name         豆瓣电影/读书附加功能 (IMDb评分 + 标记看过/已读及评分)
 // @name:en      Douban Movie & Book Helper (IMDb/RT Ratings + Watched/Read Marker)
 // @namespace    https://github.com/nnysldrwv/douban-movie-helper
-// @version      4.7
+// @version      4.8
 // @description  在豆瓣电影详情页显示IMDb/烂番茄评分，列表页自动标记已看/已读状态及星级打分。智能缓存+请求队列防风控。
 // @description:en  Show IMDb & Rotten Tomatoes ratings on Douban movie pages. Auto-mark watched/read items with star ratings in list views. Smart caching & request queue to avoid rate limiting.
 // @author       nnysldrwv
@@ -30,6 +30,7 @@
 // @connect      omdbapi.com
 // @connect      www.omdbapi.com
 // @connect      www.imdb.com
+// @connect      rottentomatoes.com
 // @connect      www.rottentomatoes.com
 // @icon         https://img3.doubanio.com/favicon.ico
 // ==/UserScript==
