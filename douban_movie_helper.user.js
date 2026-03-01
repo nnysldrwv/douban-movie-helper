@@ -424,10 +424,10 @@
     // 功能 2：在各种列表页 (Top250, 分类排行榜等) 标记“看过/已读”及“打分”
     // ==========================================
     function handleListPages() {
-        const CACHE_KEY = 'douban_watched_cache_v5'; // v5: 支持 wish/watched 状态区分
+        const CACHE_KEY = 'douban_watched_cache_v6'; // v6: 缓存统一3天，修复想看误判为已看
         const NOW = Date.now();
-        // 缓存策略：已看/想看缓存30天，未标记的缓存3天
-        const EXPIRE_MARKED = 30 * 24 * 60 * 60 * 1000;
+        // 缓存策略：已看/想看缓存3天，未标记的缓存3天
+        const EXPIRE_MARKED = 3 * 24 * 60 * 60 * 1000;
         const EXPIRE_UNMARKED = 3 * 24 * 60 * 60 * 1000;
 
         let cache = GM_getValue(CACHE_KEY, {});
@@ -546,19 +546,25 @@
                         }
                     }
 
-                    // 区分三种状态：已看/已读、想看/想读、未标记
-                    const isWatched = userRating !== null || 
-                        html.includes('<span class="a_saved">看过</span>') || 
-                        html.includes('<span class="a_saved">读过</span>') || 
-                        html.includes('我看过这部电影') ||
-                        html.includes('我读过这本书');
-                    
-                    const isWish = !isWatched && (
+                    // 区分三种状态：想看/想读、已看/已读、未标记
+                    // 注意：必须先检测「想看」，因为 userRating 的宽松提取可能误匹配页面中
+                    // 非用户评分的 stars 元素，导致想看条目被错误判定为已看
+                    const isWish = 
                         html.includes('<span class="a_saved">想看</span>') || 
                         html.includes('<span class="a_saved">想读</span>') ||
                         html.includes('我想看这部电影') ||
-                        html.includes('我想读这本书')
+                        html.includes('我想读这本书');
+                    
+                    const isWatched = !isWish && (
+                        userRating !== null || 
+                        html.includes('<span class="a_saved">看过</span>') || 
+                        html.includes('<span class="a_saved">读过</span>') || 
+                        html.includes('我看过这部电影') ||
+                        html.includes('我读过这本书')
                     );
+
+                    // 想看状态下不应有用户评分
+                    if (isWish) userRating = null;
 
                     const status = isWatched ? 'watched' : (isWish ? 'wish' : false);
                     setCache(item.typeId, status, userRating);
